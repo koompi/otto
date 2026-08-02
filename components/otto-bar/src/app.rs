@@ -18,7 +18,7 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_surface_v1::{Anchor, KeyboardInteractivity},
 };
 
-use crate::bar::{LeftPanel, RightPanel};
+use crate::bar::{bar_background, LeftPanel, RightPanel};
 use crate::config::*;
 
 /// Tracks which tray icon's context menu is currently open.
@@ -39,7 +39,8 @@ struct OpenAppMenu {
 pub struct TopBarApp {
     left_surface: Option<LayerShellSurface>,
     right_surface: Option<LayerShellSurface>,
-    _spacer_surface: Option<LayerShellSurface>,
+    _bar_surface: Option<LayerShellSurface>,
+    _hug_surface: Option<LayerShellSurface>,
     left: LeftPanel,
     right: RightPanel,
     last_left_width: f32,
@@ -55,6 +56,12 @@ pub struct TopBarApp {
     open_app_menu: Option<OpenAppMenu>,
     /// Left panel item index awaiting an async submenu fetch.
     pending_app_menu_index: Option<usize>,
+    /// Last colour scheme the surfaces were styled for.
+    last_scheme: Option<otto_kit::theme::ColorScheme>,
+    /// Width the hug surface was configured at. The canvas's own base layer size
+    /// is not the surface width, so the right-hand corner drew off-canvas and
+    /// only the left hug ever appeared.
+    hug_width: f32,
 }
 
 impl TopBarApp {
@@ -62,7 +69,8 @@ impl TopBarApp {
         Self {
             left_surface: None,
             right_surface: None,
-            _spacer_surface: None,
+            _bar_surface: None,
+            _hug_surface: None,
             left: LeftPanel::new(),
             right: RightPanel::new(),
             last_left_width: 0.0,
@@ -74,6 +82,8 @@ impl TopBarApp {
             pending_menu_index: None,
             open_app_menu: None,
             pending_app_menu_index: None,
+            last_scheme: None,
+            hug_width: 0.0,
         }
     }
 
@@ -101,18 +111,74 @@ impl TopBarApp {
         surface.base_surface().wl_surface().commit();
     }
 
-    fn apply_surface_style(surface: &LayerShellSurface, gravity: ContentsGravity) {
+    /// Draw the hug: at each screen edge, the bar's material continues down and
+    /// curves away, so a window below the bar meets a curve rather than a
+    /// straight cut. The filled shape is a `BAR_HUG` square with a quarter disc
+    /// bitten out of its inner corner.
+    fn redraw_hug(&self) {
+        let Some(ref surface) = self._hug_surface else {
+            return;
+        };
+        let (r, g, b, a) = bar_background();
+        let color = skia_safe::Color4f::new(r as f32, g as f32, b as f32, a as f32);
+        let hug = BAR_HUG;
+
+        let w = self.hug_width;
+        if w <= 2.0 * hug {
+            return;
+        }
+
+        surface.draw(move |canvas| {
+            canvas.clear(skia_safe::Color::TRANSPARENT);
+
+            let mut fill = skia_safe::Paint::new(color, None);
+            fill.set_anti_alias(true);
+            canvas.draw_rect(skia_safe::Rect::from_xywh(0.0, 0.0, hug, hug), &fill);
+            canvas.draw_rect(
+                skia_safe::Rect::from_xywh(w - hug, 0.0, hug, hug),
+                &fill,
+            );
+
+            // Bite the quarter disc out of each square's inner corner. Clearing
+            // a full circle is the whole shape - three quarters of it fall
+            // outside the square already.
+            let mut bite = skia_safe::Paint::default();
+            bite.set_anti_alias(true);
+            bite.set_blend_mode(skia_safe::BlendMode::Clear);
+            canvas.draw_circle((hug, hug), hug, &bite);
+            canvas.draw_circle((w - hug, hug), hug, &bite);
+        });
+        surface.base_surface().wl_surface().commit();
+    }
+
+    /// The bar itself: one full-width band across the top edge.
+    ///
+    /// The KOOMPI bar is a single continuous surface, not two floating pills at
+    /// the corners, so the surface that used to be an invisible spacer is what
+    /// carries the material now and the two content panels ride on top of it
+    /// with nothing of their own.
+    fn apply_bar_style(surface: &LayerShellSurface) {
         let Some(style) = surface.base_surface().surface_style() else {
             return;
         };
 
-        let theme = AppContext::current_theme();
-        let c = skia_safe::Color4f::from(theme.material_medium);
-        style.set_background_color(c.r as f64, c.g as f64, c.b as f64, c.a as f64);
+        let (r, g, b, a) = bar_background();
+        style.set_background_color(r, g, b, a);
         style.set_blend_mode(BlendMode::BackgroundBlur);
         style.set_masks_to_bounds(ClipMode::Enabled);
-        style.set_corner_radius(BAR_CORNER_RADIUS as f64);
-        style.set_shadow(0.25, 8.0, 0.0, 3.0, 0.0, 0.0, 0.0);
+        // Square: the bar spans the screen, so its top corners are the screen's
+        // and its bottom edge is met by the hug rather than by a radius.
+        style.set_corner_radius(0.0);
+    }
+
+    /// A content panel: transparent, undecorated, drawn over the bar.
+    fn apply_content_style(surface: &LayerShellSurface, gravity: ContentsGravity) {
+        let Some(style) = surface.base_surface().surface_style() else {
+            return;
+        };
+        style.set_background_color(0.0, 0.0, 0.0, 0.0);
+        style.set_masks_to_bounds(ClipMode::Enabled);
+        style.set_corner_radius(0.0);
         style.set_contents_gravity(gravity);
     }
 
@@ -419,20 +485,40 @@ impl TopBarApp {
 
 impl App for TopBarApp {
     fn on_app_ready(&mut self, _ctx: &AppContext) -> Result<(), Box<dyn std::error::Error>> {
-        // Invisible spacer spanning the full top edge — its only job is to
-        // reserve exclusive space so maximized windows are pushed down.
-        // We cannot use the left or right panel for this because they are
-        // corner-anchored, and Smithay applies exclusive zones from both
+        // The bar: one band spanning the full top edge. It also reserves the
+        // exclusive zone, which the left and right panels cannot do because they
+        // are corner-anchored and Smithay applies exclusive zones from both
         // edges of a corner anchor.
-        let spacer = LayerShellSurface::with_anchor(
+        let bar = LayerShellSurface::with_anchor(
             Layer::Top,
-            "otto-topbar-spacer",
+            "otto-topbar",
             0, // fill width
-            1, // minimal height (transparent)
+            BAR_HEIGHT,
             Some(Anchor::Top | Anchor::Left | Anchor::Right),
             Some(BAR_HEIGHT as i32 + BAR_MARGIN_TOP),
         )?;
-        spacer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        bar.set_keyboard_interactivity(KeyboardInteractivity::None);
+        Self::apply_bar_style(&bar);
+
+        // The hug: the bar's material carried past its bottom edge at the two
+        // screen edges and curved away. Its own surface, below the exclusive
+        // zone, so a window tiled under the bar passes behind the curve instead
+        // of being pushed clear of it.
+        let hug = LayerShellSurface::with_anchor(
+            Layer::Top,
+            "otto-topbar-hug",
+            0, // fill width
+            BAR_HUG as u32,
+            Some(Anchor::Top | Anchor::Left | Anchor::Right),
+            // -1, not 0: a zero exclusive zone still gets pushed clear of every
+            // other surface's zone, so the bar's own 40 would stack on top of
+            // this surface's margin and drop the hug 40px below the bar it is
+            // supposed to be joined to. -1 anchors to the raw screen edge.
+            Some(-1),
+        )?;
+        hug.set_margin(BAR_MARGIN_TOP + BAR_HEIGHT as i32, 0, 0, 0);
+        hug.set_keyboard_interactivity(KeyboardInteractivity::None);
+        Self::apply_content_style(&hug, ContentsGravity::TopLeft);
 
         // Left panel: app name + menus, anchored top-left (no exclusive zone)
         let left = LayerShellSurface::with_anchor(
@@ -445,7 +531,7 @@ impl App for TopBarApp {
         )?;
         left.set_margin(BAR_MARGIN_TOP, 0, 0, BAR_MARGIN_SIDE);
         left.set_keyboard_interactivity(KeyboardInteractivity::None);
-        Self::apply_surface_style(&left, ContentsGravity::TopLeft); // TopLeft
+        Self::apply_content_style(&left, ContentsGravity::TopLeft);
 
         // Right panel: tray + clock, anchored top-right (no exclusive zone)
         let right = LayerShellSurface::with_anchor(
@@ -458,11 +544,13 @@ impl App for TopBarApp {
         )?;
         right.set_margin(BAR_MARGIN_TOP, BAR_MARGIN_SIDE, 0, 0);
         right.set_keyboard_interactivity(KeyboardInteractivity::None);
-        Self::apply_surface_style(&right, ContentsGravity::TopRight); // TopRight
+        Self::apply_content_style(&right, ContentsGravity::TopRight);
 
         self.left_surface = Some(left);
         self.right_surface = Some(right);
-        self._spacer_surface = Some(spacer);
+        self._bar_surface = Some(bar);
+        self._hug_surface = Some(hug);
+        self.redraw_hug();
 
         crate::tray::spawn_tray_watcher();
         crate::focus::spawn_focus_watcher();
@@ -472,8 +560,13 @@ impl App for TopBarApp {
     }
 
     fn on_configure_layer(&mut self, _ctx: &AppContext, _width: i32, _height: i32, _serial: u32) {
-        // Configure fires for each layer surface (spacer, left, right).
-        // We use fixed dimensions, so just redraw on any configure.
+        // Configure fires for every layer surface with no way to tell which, so
+        // the hug is picked out by its height - the only surface not BAR_HEIGHT.
+        if _height as f32 == BAR_HUG && _width > 0 {
+            self.hug_width = _width as f32;
+            self.redraw_hug();
+        }
+        // The rest use fixed dimensions, so just redraw on any configure.
         self.right.clock.tick();
         self.update_left_panel(false);
         self.update_right_panel(false);
@@ -536,6 +629,29 @@ impl App for TopBarApp {
 
     fn on_update(&mut self, _ctx: &AppContext) {
         let mut dirty = false;
+
+        // The colour scheme arrives from the Settings portal on a background
+        // read that has not landed by the time on_app_ready styles the surfaces,
+        // so the first theme sampled is the "no preference" fallback - a light
+        // bar on a dark desktop until something else forced a restyle. Re-apply
+        // whenever it changes, which covers the startup race and a live switch
+        // with the same check.
+        let scheme = otto_kit::color_scheme::current_color_scheme();
+        if self.last_scheme != Some(scheme) {
+            self.last_scheme = Some(scheme);
+            if let Some(ref bar) = self._bar_surface {
+                Self::apply_bar_style(bar);
+            }
+            self.left.update_style();
+            self.right.update_style();
+            self.redraw_hug();
+            // Redraw rather than mark dirty: dirty resizes the right panel with
+            // an animation, and the first scheme change lands before the clock
+            // has any text, so it would spring the panel to an empty width and
+            // clip the clock away for good.
+            self.update_left_panel(false);
+            self.update_right_panel(false);
+        }
 
         // Detect menus closed externally (e.g. popup_done from click-outside)
         let menu_gone = self

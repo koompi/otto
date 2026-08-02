@@ -25,6 +25,42 @@ pub struct RightPanel {
     pub height: f32,
 }
 
+/// Something resting on the bar is a faint veil of the bar's own foreground, not
+/// a colour of its own - a lift in dark mode, a shade in light, subtle in both.
+/// A fixed black wash is invisible against a dark bar.
+/// `Appearance.colors.colBarElementBackground` is 7% of it, `...Active` 16%.
+fn veil(base: skia_safe::Color, alpha: u8) -> skia_safe::Color {
+    skia_safe::Color::from_argb(alpha, base.r(), base.g(), base.b())
+}
+
+/// The clock's face. Measured and drawn through the same call, or the right
+/// panel sizes itself to a width the clock does not occupy.
+fn clock_font() -> skia_safe::Font {
+    typography::get_font_with_fallback(FONT_FAMILY, skia_safe::FontStyle::normal(), FONT_SIZE_CLOCK)
+}
+
+/// True when the theme paints light text, i.e. a dark scheme. `Theme` carries no
+/// flag of its own, and the foreground is what the answer is needed for.
+pub fn is_dark() -> bool {
+    let text = AppContext::current_theme().text_primary;
+    let luma = 0.2126 * text.r() as f32 + 0.7152 * text.g() as f32 + 0.0722 * text.b() as f32;
+    luma > 127.0
+}
+
+/// `Appearance.colors.colBarBackground`, premultiplied-free RGBA in 0..1.
+///
+/// Fixed rather than wallpaper-themed, deliberately: KOOMPI's bar is a dark
+/// brand green in dark mode and a moonlight white in light mode, so that the
+/// foreground it was contrast-checked against stays legible whatever the
+/// wallpaper does.
+pub fn bar_background() -> (f64, f64, f64, f64) {
+    if is_dark() {
+        (8.0 / 255.0, 20.0 / 255.0, 14.0 / 255.0, 0.75)
+    } else {
+        (246.0 / 255.0, 248.0 / 255.0, 251.0 / 255.0, 0.85)
+    }
+}
+
 fn tray_menu_style() -> MenuBarStyle {
     let theme = AppContext::current_theme();
     MenuBarStyle {
@@ -36,14 +72,15 @@ fn tray_menu_style() -> MenuBarStyle {
         icon_text_gap: 0.0,
         background_color: skia_safe::Color::TRANSPARENT,
         text_color: theme.text_primary,
-        text_active_color: skia_safe::Color::WHITE,
-        hover_color: skia_safe::Color::from_argb(30, 0, 0, 0),
-        active_color: skia_safe::Color::from_argb(80, 0, 0, 0),
+        text_active_color: theme.text_primary,
+        hover_color: veil(theme.text_primary, 18),
+        active_color: veil(theme.text_primary, 41),
         icon_tint: theme.text_primary,
-        icon_active_tint: skia_safe::Color::WHITE,
-        font_size: 13.0,
+        icon_active_tint: theme.text_primary,
+        font_family: FONT_FAMILY,
+        font_size: FONT_SIZE_LABEL,
         font_weight: skia_safe::font_style::Weight::SEMI_BOLD,
-        item_corner_radius: 4.0,
+        item_corner_radius: ITEM_CORNER_RADIUS,
     }
 }
 
@@ -51,21 +88,23 @@ fn left_menu_style() -> MenuBarStyle {
     let theme = AppContext::current_theme();
     MenuBarStyle {
         height: BAR_HEIGHT as f32,
-        item_padding_horizontal: 8.0,
-        bar_padding_horizontal: 6.0,
+        // A KOOMPI menu title is `label + 20` wide, with the label centred.
+        item_padding_horizontal: 10.0,
+        bar_padding_horizontal: BAR_PADDING_H,
         item_spacing: 0.0,
         icon_size: 16.0,
         icon_text_gap: 6.0,
         background_color: skia_safe::Color::TRANSPARENT,
         text_color: theme.text_primary,
-        text_active_color: skia_safe::Color::WHITE,
-        hover_color: skia_safe::Color::from_argb(30, 0, 0, 0),
-        active_color: skia_safe::Color::from_argb(80, 0, 0, 0),
+        text_active_color: theme.text_primary,
+        hover_color: veil(theme.text_primary, 18),
+        active_color: veil(theme.text_primary, 41),
         icon_tint: theme.text_primary,
-        icon_active_tint: skia_safe::Color::WHITE,
-        font_size: 13.0,
+        icon_active_tint: theme.text_primary,
+        font_family: FONT_FAMILY,
+        font_size: FONT_SIZE_LABEL,
         font_weight: skia_safe::font_style::Weight::BOLD,
-        item_corner_radius: 4.0,
+        item_corner_radius: ITEM_CORNER_RADIUS,
     }
 }
 
@@ -113,7 +152,6 @@ impl LeftPanel {
         }
     }
 
-    #[allow(dead_code)]
     pub fn update_style(&mut self) {
         self.style = left_menu_style();
     }
@@ -154,7 +192,7 @@ impl LeftPanel {
         }
 
         let font = otto_kit::typography::get_font_with_fallback(
-            "Inter",
+            self.style.font_family,
             self.style.font_style(),
             self.style.font_size,
         );
@@ -173,7 +211,7 @@ impl LeftPanel {
     /// Compute the x-offset of a menu item for popup positioning.
     pub fn item_anchor_x(&self, index: usize) -> f32 {
         let font = otto_kit::typography::get_font_with_fallback(
-            "Inter",
+            self.style.font_family,
             self.style.font_style(),
             self.style.font_size,
         );
@@ -211,7 +249,6 @@ impl RightPanel {
         }
     }
 
-    #[allow(dead_code)]
     pub fn update_style(&mut self) {
         self.tray_style = tray_menu_style();
     }
@@ -250,7 +287,7 @@ impl RightPanel {
     }
 
     fn draw_clock(&self, canvas: &Canvas, theme: &Theme) -> f32 {
-        let font = typography::styles::BODY_MEDIUM.font();
+        let font = clock_font();
         let text = &self.clock.text;
         let text_width = font.measure_str(text, None).0;
 
@@ -270,7 +307,7 @@ impl RightPanel {
 
     /// Compute the ideal panel width based on current clock text and tray icon count.
     pub fn target_width(&self) -> f32 {
-        let font = typography::styles::BODY_MEDIUM.font();
+        let font = clock_font();
         let clock_text_width = font.measure_str(&self.clock.text, None).0;
         let tray_width = MenuBarRenderer::measure_width(&self.tray_menu_state, &self.tray_style);
         let gap = if tray_width > 0.0 {
@@ -288,7 +325,7 @@ impl RightPanel {
             return None;
         }
 
-        let font = typography::styles::BODY_MEDIUM.font();
+        let font = clock_font();
         let clock_width = font.measure_str(&self.clock.text, None).0 + BAR_PADDING_H;
         let tray_width = MenuBarRenderer::measure_width(&self.tray_menu_state, &self.tray_style);
         let gap = if tray_width > 0.0 {
@@ -305,7 +342,7 @@ impl RightPanel {
 
         // Walk items to find hit
         let font = otto_kit::typography::get_font_with_fallback(
-            "Inter",
+            self.tray_style.font_family,
             self.tray_style.font_style(),
             self.tray_style.font_size,
         );
@@ -329,7 +366,7 @@ impl RightPanel {
             return None;
         }
         let font = otto_kit::typography::get_font_with_fallback(
-            "Inter",
+            self.tray_style.font_family,
             self.tray_style.font_style(),
             self.tray_style.font_size,
         );
