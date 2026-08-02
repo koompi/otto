@@ -16,7 +16,7 @@ pub fn view_window_shadow(
     let draw_scale = Config::with(|config| config.screen_scale) as f32;
     let draw_shadow = move |canvas: &layers::skia::Canvas, w: f32, h: f32| {
         // draw shadow with different opacity based on activation state
-        let window_corner_radius = 15.0 * draw_scale;
+        let window_corner_radius = super::WINDOW_CORNER_RADIUS * draw_scale;
         let rect = layers::skia::Rect::from_xywh(
             SAFE_AREA,
             SAFE_AREA,

@@ -1,6 +1,6 @@
 use layers::{
     engine::{Engine, TransactionRef},
-    prelude::{taffy, Layer, Transition},
+    prelude::{taffy, BorderRadius, Layer, Transition},
     skia,
     types::Point,
     view::RenderLayerTree,
@@ -8,6 +8,7 @@ use layers::{
 use smithay::{reexports::wayland_server::backend::ObjectId, utils::Logical};
 use std::sync::{atomic::AtomicBool, Arc};
 
+use crate::config::Config;
 use crate::shell::WindowElement;
 
 use super::{effects::GenieEffect, model::WindowViewBaseModel, render::view_window_shadow};
@@ -49,6 +50,16 @@ impl WindowView {
             position: taffy::Position::Absolute,
             ..Default::default()
         });
+        // Round the window's own content, not just the shadow behind it. Without
+        // the clip a client that draws square corners - anything server-side
+        // decorated, and every Qt app - keeps them, and the sharp corner sits
+        // inside a rounded shadow next to the bar's rounded hug.
+        let content_scale = Config::with(|config| config.screen_scale) as f32;
+        content_layer.set_border_corner_radius(
+            BorderRadius::new_single(super::WINDOW_CORNER_RADIUS * content_scale),
+            None,
+        );
+        content_layer.set_clip_content(true, None);
 
         let shadow_layer = layers_engine.new_layer();
         shadow_layer.set_layout_style(taffy::Style {
