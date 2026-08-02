@@ -29,6 +29,7 @@ pub fn draw_badge(text: String) -> ContentDrawFunction {
         let font = FONT_CACHE.with(|font_cache| {
             font_cache.make_font_with_fallback(font_family, font_style, text_size)
         });
+        let font = koompi_font_covering(font, &text);
 
         let mut text_paint =
             layers::skia::Paint::new(layers::skia::Color4f::new(1.0, 1.0, 1.0, 1.0), None);
@@ -243,6 +244,34 @@ pub fn setup_miniwindow_icon(layer: &Layer, inner_layer: &Layer, icon_width: f32
     inner_layer.build_layer_tree(&inner_tree);
 }
 
+/// KOOMPI: Skia draws a run with a single typeface and performs no per-glyph
+/// fallback, so an app name in a script the configured `font_family` does not
+/// cover comes out as .notdef boxes. An app name is one script in practice, so
+/// swap the whole run to a family that has the first character the primary
+/// misses. Returns the font unchanged when everything is covered.
+fn koompi_font_covering(font: layers::skia::Font, text: &str) -> layers::skia::Font {
+    let mut glyphs = vec![0u16; text.chars().count()];
+    font.str_to_glyphs(text, &mut glyphs);
+    let missing = text
+        .chars()
+        .zip(glyphs.iter())
+        .find(|(_, glyph)| **glyph == 0)
+        .map(|(c, _)| c);
+    let Some(c) = missing else {
+        return font;
+    };
+    let style = font.typeface().font_style();
+    let Some(typeface) = layers::skia::FontMgr::new()
+        .match_family_style_character("", style, &[], c as i32)
+    else {
+        return font;
+    };
+    let mut fallback = layers::skia::Font::from_typeface(typeface, font.size());
+    fallback.set_subpixel(true);
+    fallback.set_edging(font.edging());
+    fallback
+}
+
 pub fn setup_label(new_layer: &Layer, label_text: String) {
     // The tooltip is drawn straight into the scene, so every measurement below
     // is in physical pixels: keep the design in logical points and scale once.
@@ -256,6 +285,7 @@ pub fn setup_label(new_layer: &Layer, label_text: String) {
             text_size,
         )
     });
+    let font = koompi_font_covering(font, &label_text);
 
     let text = label_text.clone();
     let paint = layers::skia::Paint::default();
