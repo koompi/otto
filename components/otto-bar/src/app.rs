@@ -151,6 +151,30 @@ impl TopBarApp {
         surface.base_surface().wl_surface().commit();
     }
 
+    /// Resize the two full-width surfaces' styles to the output.
+    ///
+    /// A surface style carries its own size, and clipping is against that, not
+    /// against the wl_surface. The bar is created with width 0 so the compositor
+    /// fills it, but its style keeps whatever size it had at startup, so moving
+    /// to a wider screen left the background painted at the old width with bare
+    /// wallpaper beside it and the clock floating past its end.
+    ///
+    /// Driven off the hug's configure because that is the one surface whose
+    /// height identifies it, and the two span the same output.
+    fn fit_full_width(&self, width: f32) {
+        let scale = AppContext::fractional_scale();
+        for (surface, height) in [
+            (&self._bar_surface, BAR_HEIGHT as f32),
+            (&self._hug_surface, BAR_HUG),
+        ] {
+            let Some(surface) = surface else { continue };
+            let Some(style) = surface.base_surface().surface_style() else {
+                continue;
+            };
+            style.set_size(width as f64 * scale, height as f64 * scale);
+        }
+    }
+
     /// The bar itself: one full-width band across the top edge.
     ///
     /// The KOOMPI bar is a single continuous surface, not two floating pills at
@@ -564,6 +588,7 @@ impl App for TopBarApp {
         // the hug is picked out by its height - the only surface not BAR_HEIGHT.
         if _height as f32 == BAR_HUG && _width > 0 {
             self.hug_width = _width as f32;
+            self.fit_full_width(_width as f32);
             self.redraw_hug();
         }
         // The rest use fixed dimensions, so just redraw on any configure.
