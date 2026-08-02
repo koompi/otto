@@ -2512,15 +2512,6 @@ impl Workspaces {
             }
         }
 
-        // KOOMPI: hold windows off the screen edges the way the Hyprland
-        // session does (gaps_out = 5), so a window's rounded corner meets the
-        // topbar's hug instead of butting flush against it.
-        const KOOMPI_WINDOW_GAP: i32 = 5;
-        adjusted.loc.x += KOOMPI_WINDOW_GAP;
-        adjusted.loc.y += KOOMPI_WINDOW_GAP;
-        adjusted.size.w = (adjusted.size.w - 2 * KOOMPI_WINDOW_GAP).max(1);
-        adjusted.size.h = (adjusted.size.h - 2 * KOOMPI_WINDOW_GAP).max(1);
-
         Some(adjusted)
     }
 
