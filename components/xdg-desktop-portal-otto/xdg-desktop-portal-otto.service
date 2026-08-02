@@ -1,0 +1,17 @@
+[Unit]
+# org.freedesktop.impl.portal.desktop.otto.service names this unit in its
+# SystemdService= line. Without the unit on disk, D-Bus activation of the
+# backend fails with "unknown unit" and xdg-desktop-portal silently falls back
+# to another implementation - on a dark desktop that means every app is told
+# the colour scheme is light.
+Description=Portal service (Otto implementation)
+PartOf=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.impl.portal.desktop.otto
+# Same path the D-Bus service file's Exec= uses.
+ExecStart=/usr/libexec/xdg-desktop-portal-otto
+Restart=on-failure
+Slice=session.slice
+TimeoutStopSec=10
