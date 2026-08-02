@@ -29,6 +29,17 @@ pub struct FontCache {
     cache: RefCell<std::collections::HashMap<CacheKey, Font>>,
 }
 
+/// Whether a resolved font can actually draw the text it will be asked to draw.
+///
+/// fontconfig never *fails* a family match, it substitutes: on a box with no
+/// Inter installed, `fc-match Inter` answers Noto Sans Khmer. `match_family_style`
+/// then returns a typeface with no Latin coverage and every label renders as
+/// .notdef boxes, with the fallback chain below never firing because nothing
+/// reported failure. A family name alone is not a usable font.
+fn usable(font: &Font) -> bool {
+    font.unichar_to_glyph('A' as i32) != 0
+}
+
 impl FontCache {
     fn new() -> Self {
         Self {
@@ -59,13 +70,13 @@ impl FontCache {
 
     /// Get font with fallback to system default
     pub fn get_font_with_fallback(&self, family: &str, style: FontStyle, size: f32) -> Font {
-        if let Some(font) = self.get_font(family, style, size) {
+        if let Some(font) = self.get_font(family, style, size).filter(usable) {
             return font;
         }
 
         // Try common fallback fonts
         for fallback in ["sans-serif", "DejaVu Sans", "Liberation Sans", "Arial"] {
-            if let Some(font) = self.get_font(fallback, style, size) {
+            if let Some(font) = self.get_font(fallback, style, size).filter(usable) {
                 eprintln!(
                     "Font '{}' not found, using fallback: '{}'",
                     family, fallback
@@ -74,11 +85,14 @@ impl FontCache {
             }
         }
 
-        // Last resort: system default
+        // Last resort: ask for any typeface that has the character, rather than
+        // the legacy default - which is another family-name lookup and so has
+        // the same substitution problem.
         eprintln!("Font '{}' and all fallbacks failed, using default", family);
         let typeface = self
             .font_mgr
-            .legacy_make_typeface(None, style)
+            .match_family_style_character("", style, &[], 'A' as i32)
+            .or_else(|| self.font_mgr.legacy_make_typeface(None, style))
             .expect("Failed to create default typeface");
         let mut font = Font::from_typeface(typeface, size);
         font.set_subpixel(true);
