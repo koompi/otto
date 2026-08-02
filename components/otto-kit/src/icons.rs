@@ -142,15 +142,115 @@ pub fn find_icon_in_theme(
             .map(|p| p.to_string_lossy().into_owned())
     };
 
-    // Fallbacks
-    result.or_else(|| {
-        if icon_name != "application-default-icon" && icon_name != "application-x-executable" {
-            find_icon("application-default-icon", size, scale)
-                .or_else(|| find_icon("application-x-executable", size, scale))
+    // The sweep wins over the theme walk when it finds anything, because it
+    // picks by quality - scalable, then the largest raster - and the walk
+    // returns whatever it reaches first, which for google-chrome is a 16px PNG
+    // blown up to dock size.
+    sweep_icon_dirs(icon_name, theme_name)
+        .or(result)
+        .or_else(|| {
+            if icon_name != "application-default-icon" && icon_name != "application-x-executable" {
+                find_icon("application-default-icon", size, scale)
+                    .or_else(|| find_icon("application-x-executable", size, scale))
+            } else {
+                None
+            }
+        })
+}
+
+/// Last resort: look for a file named after the icon anywhere under the icon
+/// directories, whatever theme it happens to sit in.
+///
+/// The theme walk above misses icons that are plainly on disk. It matches a
+/// theme by its `index.theme` `Name=` rather than by directory, and it does not
+/// follow `Inherits=`, so it never reaches hicolor - where most app icons
+/// actually live, and which the spec makes the mandatory fallback. Measured on
+/// a KOOMPI box: `org.kde.dolphin` (hicolor/scalable/apps) and `google-chrome`
+/// (breeze-plus and hicolor) both drew the generic gear, while
+/// `org.wezfurlong.wezterm` rendered because it sits in /usr/share/pixmaps and
+/// needs no theme at all.
+///
+/// ponytail: a filesystem sweep, not a spec-complete theme walk. It cannot
+/// honour the requested size, only prefer scalable then the largest raster.
+/// Replace it with an inherits-aware lookup if a wrong size ever shows up.
+fn sweep_icon_dirs(icon_name: &str, theme_name: Option<&str>) -> Option<String> {
+    /// Which theme an icon came from matters more than how big it is: this box
+    /// has five user icon themes that each ship an `org.wezfurlong.wezterm.svg`,
+    /// and picking whichever the walk reached first gave one app a candy icon
+    /// and its neighbour a stock one. Configured theme, then hicolor and
+    /// pixmaps, which is what everything else on the system falls back to.
+    fn tier(path: &std::path::Path, theme_name: Option<&str>) -> u32 {
+        let s = path.to_string_lossy();
+        if theme_name.is_some_and(|t| s.contains(&format!("/{t}/"))) {
+            2
+        } else if s.contains("/hicolor/") || s.contains("/pixmaps/") {
+            1
         } else {
-            None
+            0
         }
-    })
+    }
+
+    fn walk(
+        dir: &std::path::Path,
+        stem: &str,
+        theme_name: Option<&str>,
+        depth: u32,
+        best: &mut Option<((u32, u32), String)>,
+    ) {
+        if depth == 0 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, stem, theme_name, depth - 1, best);
+                continue;
+            }
+            if path.file_stem().and_then(|s| s.to_str()) != Some(stem) {
+                continue;
+            }
+            let rank = match path.extension().and_then(|s| s.to_str()) {
+                Some("svg") => u32::MAX,
+                // The size lives in a different component per theme: hicolor
+                // writes `hicolor/256x256/apps/`, breeze writes `apps/48/`. So
+                // take the largest number seen anywhere in the path rather than
+                // guessing which component holds it - reading only the parent
+                // gave every hicolor PNG the same rank and let a 16px one win.
+                Some("png") | Some("xpm") => path
+                    .components()
+                    .filter_map(|c| c.as_os_str().to_str())
+                    .filter_map(|s| s.split('x').next()?.parse::<u32>().ok())
+                    .max()
+                    .unwrap_or(1),
+                _ => continue,
+            };
+            let key = (tier(&path, theme_name), rank);
+            if best.as_ref().is_none_or(|(k, _)| key > *k) {
+                *best = Some((key, path.to_string_lossy().into_owned()));
+            }
+        }
+    }
+
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(home) = std::env::var_os("HOME") {
+        roots.push(std::path::PathBuf::from(&home).join(".icons"));
+        roots.push(std::path::PathBuf::from(&home).join(".local/share/icons"));
+    }
+    let data_dirs =
+        std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
+    for d in data_dirs.split(':') {
+        roots.push(std::path::PathBuf::from(d).join("icons"));
+        roots.push(std::path::PathBuf::from(d).join("pixmaps"));
+    }
+
+    let mut best = None;
+    for root in roots {
+        walk(&root, icon_name, theme_name, 4, &mut best);
+    }
+    best.map(|(_, path)| path)
 }
 
 // ---------------------------------------------------------------------------
