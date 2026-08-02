@@ -27,6 +27,7 @@ pub struct MenuBarStyle {
     pub icon_active_tint: Color,
 
     // Typography
+    pub font_family: &'static str,
     pub font_size: f32,
     pub font_weight: skia_safe::font_style::Weight,
 
@@ -57,6 +58,7 @@ impl Default for MenuBarStyle {
             icon_active_tint: Color::WHITE,
 
             // Typography
+            font_family: "Inter",
             font_size: 13.0,
             font_weight: skia_safe::font_style::Weight::SEMI_BOLD,
 

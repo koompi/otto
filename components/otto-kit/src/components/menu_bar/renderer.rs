@@ -32,7 +32,7 @@ impl MenuBarRenderer {
         let bg_paint = Paint::new(Color4f::from(style.background_color), None);
         canvas.draw_rect(Rect::new(0.0, 0.0, width, style.height), &bg_paint);
 
-        let font = typography::get_font_with_fallback("Inter", style.font_style(), style.font_size);
+        let font = typography::get_font_with_fallback(style.font_family, style.font_style(), style.font_size);
 
         let mut item_bounds = Vec::new();
         let mut x_offset = style.bar_padding_horizontal;
@@ -181,7 +181,7 @@ impl MenuBarRenderer {
 
     /// Calculate minimum width needed for the component
     pub fn measure_width(state: &MenuBarState, style: &MenuBarStyle) -> f32 {
-        let font = typography::get_font_with_fallback("Inter", style.font_style(), style.font_size);
+        let font = typography::get_font_with_fallback(style.font_family, style.font_style(), style.font_size);
         style.total_width(state.items(), &font)
     }
 }
