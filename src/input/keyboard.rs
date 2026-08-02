@@ -77,11 +77,8 @@ pub fn process_keyboard_shortcut(
         modifiers.logo
     );
 
-    if modifiers.ctrl && modifiers.alt && keysym == Keysym::BackSpace
-        || modifiers.logo && keysym == Keysym::q
-    {
+    if modifiers.ctrl && modifiers.alt && keysym == Keysym::BackSpace {
         // ctrl+alt+backspace = quit
-        // logo + q = quit
         tracing::info!("keyboard shortcut activated");
         return Some(KeyAction::Quit);
     }
